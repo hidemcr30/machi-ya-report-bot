@@ -208,6 +208,75 @@ def get_campfire_data_batch(
     return ordered_results
 
 
+def get_campfire_data_batch_with_progress(
+    project_ids: List[str], 
+    max_workers: int = 2, 
+    timeout: int = 10,
+    progress_callback=None
+) -> List[Tuple[str, Tuple[str, str]]]:
+    """
+    複数のCAMPFIREプロジェクトから並行してデータを取得（プログレス付き）
+    
+    Args:
+        project_ids: プロジェクトIDのリスト
+        max_workers: 最大並行実行数（サーバー負荷を考慮して少なめ）
+        timeout: リクエストタイムアウト（秒）
+        progress_callback: プログレス更新コールバック関数
+    
+    Returns:
+        (プロジェクトID, (金額, 人数)) のタプルのリスト
+    """
+    results = []
+    total_projects = len(project_ids)
+    completed_count = 0
+    
+    def fetch_single_project(pj_id: str) -> Tuple[str, Tuple[str, str]]:
+        """単一プロジェクトのデータ取得"""
+        try:
+            data = get_campfire_data(pj_id, timeout, use_rate_limit=True)
+            return (pj_id, data)
+        except Exception as e:
+            return (pj_id, (f"エラー: {str(e)}", "エラー"))
+    
+    # ThreadPoolExecutorで並行実行（控えめな並行数）
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 全てのタスクを投入
+        future_to_pj_id = {
+            executor.submit(fetch_single_project, pj_id): pj_id 
+            for pj_id in project_ids
+        }
+        
+        # 完了順に結果を収集（プログレス更新付き）
+        for future in as_completed(future_to_pj_id):
+            try:
+                result = future.result()
+                results.append(result)
+                completed_count += 1
+                
+                # プログレス更新
+                if progress_callback:
+                    progress = completed_count / total_projects
+                    pj_id = result[0]
+                    status = "取得OK" if "エラー" not in result[1][0] else "エラー"
+                    progress_callback(progress, f"並行取得中: {completed_count}/{total_projects} (最新: {pj_id} - {status})")
+                
+            except Exception as e:
+                pj_id = future_to_pj_id[future]
+                results.append((pj_id, (f"予期しないエラー: {str(e)}", "エラー")))
+                completed_count += 1
+                
+                # プログレス更新（エラー時）
+                if progress_callback:
+                    progress = completed_count / total_projects
+                    progress_callback(progress, f"並行取得中: {completed_count}/{total_projects} (最新: {pj_id} - エラー)")
+    
+    # 元の順序に並び替え
+    result_dict = dict(results)
+    ordered_results = [(pj_id, result_dict.get(pj_id, ("取得不可", "取得不可"))) for pj_id in project_ids]
+    
+    return ordered_results
+
+
 def read_sheet_range(service, spreadsheet_id: str, range_str: str) -> List[List[str]]:
     """
     Google Sheetsから指定範囲のデータを読み取り

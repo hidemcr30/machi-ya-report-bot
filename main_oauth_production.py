@@ -7,8 +7,9 @@ import sys
 import os
 
 from utils import (
-    get_gsheet_service, get_campfire_data, get_campfire_data_batch, read_sheet_range, write_sheet_batch,
-    is_valid_date_string, should_fetch_project_data, AuthenticationError, ScrapingError, SheetsError
+    get_gsheet_service, get_campfire_data, get_campfire_data_batch, get_campfire_data_batch_with_progress,
+    read_sheet_range, write_sheet_batch, is_valid_date_string, should_fetch_project_data, 
+    AuthenticationError, ScrapingError, SheetsError
 )
 from config import (
     get_spreadsheet_config, get_scopes, UI_CONFIG, BATCH_SIZE, ERROR_MESSAGES
@@ -22,7 +23,8 @@ def process_production_project_data_fast(
     rows: List[List[str]], 
     start_row: int, 
     target_date: datetime.date,
-    max_workers: int = 2
+    max_workers: int = 2,
+    progress_callback=None
 ) -> List[Tuple[int, str, str, str, str]]:
     """
     プロダクション用プロジェクトデータを高速処理（並行実行版）
@@ -32,12 +34,14 @@ def process_production_project_data_fast(
         start_row: 開始行番号
         target_date: 対象日
         max_workers: 最大並行実行数
+        progress_callback: プログレス更新コールバック関数
     
     Returns:
         (行番号, プロジェクトID, 金額, 人数, ステータス) のタプルのリスト
     """
     results = []
     fetch_targets = []  # 実際にHTTPリクエストが必要なプロジェクト
+    total_rows = len(rows)
     
     # Phase 1: 事前フィルタリング（高速）
     for i, row_data in enumerate(rows, start=start_row):
@@ -58,12 +62,20 @@ def process_production_project_data_fast(
             # HTTPリクエストが必要なプロジェクト
             fetch_targets.append((i, pj_id))
     
+    # プログレス更新（フィルタリング完了）
+    if progress_callback:
+        progress_callback(0.2, f"事前フィルタリング完了: {len(fetch_targets)}件の並行取得を開始")
+    
     # Phase 2: 並行データ取得（最適化済み）
     if fetch_targets:
         project_ids = [pj_id for _, pj_id in fetch_targets]
         
-        # バッチ処理で並行取得
-        fetch_results = get_campfire_data_batch(project_ids, max_workers=max_workers)
+        # バッチ処理で並行取得（プログレス付き）
+        fetch_results = get_campfire_data_batch_with_progress(
+            project_ids, 
+            max_workers=max_workers,
+            progress_callback=lambda p, msg: progress_callback(0.2 + p * 0.7, msg) if progress_callback else None
+        )
         
         # 結果をマージ
         for (row_index, pj_id), (_, (amount, count)) in zip(fetch_targets, fetch_results):
@@ -72,8 +84,17 @@ def process_production_project_data_fast(
             else:
                 results.append((row_index, pj_id, amount, count, "取得OK"))
     
+    # プログレス更新（並行取得完了）
+    if progress_callback:
+        progress_callback(0.9, "データ処理中...")
+    
     # 行番号順でソート
     results.sort(key=lambda x: x[0])
+    
+    # プログレス更新（完了）
+    if progress_callback:
+        progress_callback(1.0, "処理完了")
+    
     return results
 
 
@@ -176,8 +197,18 @@ if st.button("▶️ 金額・人数を取得（書き込みはまだ）"):
             
             st.write(f"📊 処理統計: 全{total_count}件中、{valid_count}件を並行取得、{total_count - valid_count}件を事前除外")
             
-            # 高速並行処理
-            results = process_production_project_data_fast(rows, start_row, target_date, max_workers)
+            # プログレスバーとステータス表示
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            def update_progress(progress: float, message: str):
+                progress_bar.progress(progress)
+                status_text.text(message)
+            
+            # 高速並行処理（プログレス付き）
+            results = process_production_project_data_fast(
+                rows, start_row, target_date, max_workers, update_progress
+            )
             
         else:
             st.info("🐢 安全モードで処理中...")
