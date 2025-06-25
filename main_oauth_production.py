@@ -100,7 +100,21 @@ if st.button("▶️ 金額・人数を取得（書き込みはまだ）"):
 
         st.session_state["results"] = results
         st.success("取得完了 ✅")
-        st.dataframe(pd.DataFrame(results, columns=["行", "プロジェクトID", "金額", "人数", "ステータス"]))
+        
+        # 全結果の表示
+        df_all = pd.DataFrame(results, columns=["行", "プロジェクトID", "金額", "人数", "ステータス"])
+        
+        # 取得OKのプロジェクトのみ抽出
+        df_ok = df_all[df_all["ステータス"] == "取得OK"]
+        df_other = df_all[df_all["ステータス"] != "取得OK"]
+        
+        if len(df_ok) > 0:
+            st.subheader(f"📝 書き込み対象プロジェクト ({len(df_ok)}件)")
+            st.dataframe(df_ok)
+        
+        if len(df_other) > 0:
+            st.subheader(f"ℹ️ 対象外プロジェクト ({len(df_other)}件)")
+            st.dataframe(df_other)
     
     except AuthenticationError as e:
         st.error(f"認証エラー: {str(e)}")
@@ -124,12 +138,9 @@ if st.session_state["results"]:
             batch_data = []
 
             for idx, (row, pj_id, amount, count, status) in enumerate(results):
-                if (
-                    ERROR_MESSAGES["fetch_failed"] in amount or 
-                    "エラー" in amount or 
-                    pj_id == ERROR_MESSAGES["no_id"]
-                ):
-                    write_log.append((row, pj_id, ERROR_MESSAGES["skip"]))
+                # 取得OKでない場合はすべてスキップ
+                if status != "取得OK":
+                    write_log.append((row, pj_id, f"スキップ({status})"))
                     continue
 
                 # 金額と人数の両方を追加

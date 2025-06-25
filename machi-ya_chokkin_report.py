@@ -77,7 +77,21 @@ if st.button("▶️ 金額を取得（書き込みはまだ）"):
 
         st.session_state["results"] = results
         st.success("取得完了 ✅")
-        st.table(pd.DataFrame(results, columns=["行", "プロジェクトID", "金額"]))
+        
+        # 全結果の表示
+        df_all = pd.DataFrame(results, columns=["行", "プロジェクトID", "金額"])
+        
+        # 正常取得とエラーを分離
+        df_ok = df_all[~df_all["金額"].str.contains("エラー|取得不可", na=False) & (df_all["プロジェクトID"] != ERROR_MESSAGES["no_id"])]
+        df_error = df_all[(df_all["金額"].str.contains("エラー|取得不可", na=False)) | (df_all["プロジェクトID"] == ERROR_MESSAGES["no_id"])]
+        
+        if len(df_ok) > 0:
+            st.subheader(f"📝 書き込み対象プロジェクト ({len(df_ok)}件)")
+            st.dataframe(df_ok)
+        
+        if len(df_error) > 0:
+            st.subheader(f"⚠️ エラー・対象外プロジェクト ({len(df_error)}件)")
+            st.dataframe(df_error)
     
     except AuthenticationError as e:
         st.error(f"認証エラー: {str(e)}")
