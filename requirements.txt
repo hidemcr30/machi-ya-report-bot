@@ -1,0 +1,15 @@
+# Core dependencies
+streamlit>=1.28.0
+pandas>=1.5.0
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+
+# Google APIs
+google-auth>=2.17.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.70.0
+google-analytics-data>=0.16.0
+
+# Type hints and utilities
+typing_extensions>=4.4.0
