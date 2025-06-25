@@ -45,6 +45,15 @@ MAX_RETRIES = 3
 BATCH_SIZE = 100
 PROGRESS_UPDATE_INTERVAL = 1  # 秒
 
+# --- パフォーマンス設定 ---
+PERFORMANCE_CONFIG = {
+    "max_workers": 2,           # 並行実行数（サーバー負荷配慮）
+    "base_delay": 0.5,          # 基本待機時間（秒）
+    "max_delay": 3.0,           # 最大待機時間（秒）
+    "timeout": 10,              # リクエストタイムアウト（秒）
+    "session_keepalive": True   # セッション再利用
+}
+
 # --- CAMPFIRE設定 ---
 CAMPFIRE_BASE_URL = "https://camp-fire.jp/projects"
 CAMPFIRE_SELECTORS = {

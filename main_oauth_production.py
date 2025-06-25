@@ -7,8 +7,8 @@ import sys
 import os
 
 from utils import (
-    get_gsheet_service, get_campfire_data, read_sheet_range, write_sheet_batch,
-    is_valid_date_string, AuthenticationError, ScrapingError, SheetsError
+    get_gsheet_service, get_campfire_data, get_campfire_data_batch, read_sheet_range, write_sheet_batch,
+    is_valid_date_string, should_fetch_project_data, AuthenticationError, ScrapingError, SheetsError
 )
 from config import (
     get_spreadsheet_config, get_scopes, UI_CONFIG, BATCH_SIZE, ERROR_MESSAGES
@@ -18,13 +18,72 @@ from config import (
 SPREADSHEET_CONFIG = get_spreadsheet_config("production")
 SCOPES = get_scopes("sheets_only")
 
+def process_production_project_data_fast(
+    rows: List[List[str]], 
+    start_row: int, 
+    target_date: datetime.date,
+    max_workers: int = 2
+) -> List[Tuple[int, str, str, str, str]]:
+    """
+    プロダクション用プロジェクトデータを高速処理（並行実行版）
+    
+    Args:
+        rows: 全行データ
+        start_row: 開始行番号
+        target_date: 対象日
+        max_workers: 最大並行実行数
+    
+    Returns:
+        (行番号, プロジェクトID, 金額, 人数, ステータス) のタプルのリスト
+    """
+    results = []
+    fetch_targets = []  # 実際にHTTPリクエストが必要なプロジェクト
+    
+    # Phase 1: 事前フィルタリング（高速）
+    for i, row_data in enumerate(rows, start=start_row):
+        pj_id = row_data[0] if len(row_data) > 0 else ""
+        
+        # 事前チェックでHTTPリクエスト不要なケースを除外
+        if not should_fetch_project_data(row_data, target_date):
+            # 詳細な理由を判定
+            if not pj_id:
+                results.append((i, ERROR_MESSAGES["no_id"], "-", "-", ERROR_MESSAGES["skip"]))
+            elif not (row_data[5] if len(row_data) > 5 else ""):
+                results.append((i, pj_id, "-", "-", "終了日なし"))
+            elif not is_valid_date_string(row_data[5] if len(row_data) > 5 else ""):
+                results.append((i, pj_id, "-", "-", ERROR_MESSAGES["date_parse_error"]))
+            else:
+                results.append((i, pj_id, "-", "-", "対象外"))
+        else:
+            # HTTPリクエストが必要なプロジェクト
+            fetch_targets.append((i, pj_id))
+    
+    # Phase 2: 並行データ取得（最適化済み）
+    if fetch_targets:
+        project_ids = [pj_id for _, pj_id in fetch_targets]
+        
+        # バッチ処理で並行取得
+        fetch_results = get_campfire_data_batch(project_ids, max_workers=max_workers)
+        
+        # 結果をマージ
+        for (row_index, pj_id), (_, (amount, count)) in zip(fetch_targets, fetch_results):
+            if "エラー" in amount or amount == "取得不可":
+                results.append((row_index, pj_id, "-", "-", f"取得エラー"))
+            else:
+                results.append((row_index, pj_id, amount, count, "取得OK"))
+    
+    # 行番号順でソート
+    results.sort(key=lambda x: x[0])
+    return results
+
+
 def process_production_project_data(
     row_data: List[str], 
     row_index: int, 
     target_date: datetime.date
 ) -> Tuple[int, str, str, str, str]:
     """
-    プロダクション用プロジェクトデータを処理
+    プロダクション用プロジェクトデータを処理（単体処理版・互換性維持）
     
     Args:
         row_data: 行データ
@@ -81,25 +140,62 @@ target_date = st.date_input(
 if "results" not in st.session_state:
     st.session_state["results"] = []
 
+# --- パフォーマンス設定 ---
+performance_mode = st.selectbox(
+    "処理モード",
+    ["高速モード（並行処理）", "安全モード（順次処理）"],
+    index=0,
+    help="高速モードは並行処理でサーバー負荷を配慮しつつ高速化。安全モードは従来の順次処理。"
+)
+
+max_workers = st.slider(
+    "並行実行数（高速モード時）",
+    min_value=1,
+    max_value=4,
+    value=2,
+    help="同時実行するリクエスト数。多すぎるとサーバー負荷が高くなります。"
+)
+
 # --- データ取得処理 ---
 if st.button("▶️ 金額・人数を取得（書き込みはまだ）"):
     try:
         service = get_gsheet_service(SCOPES)
-        results = []
-
-        progress = st.progress(0)
-        total = end_row - start_row + 1
-
+        
         range_str = f"{SPREADSHEET_CONFIG['sheet_name']}!E{start_row}:J{end_row}"
         rows = read_sheet_range(service, SPREADSHEET_CONFIG["id"], range_str)
+        
+        # 処理開始時刻記録
+        start_time = time.time()
+        
+        if performance_mode == "高速モード（並行処理）":
+            st.info(f"🚀 高速モードで処理中... （並行数: {max_workers}）")
+            
+            # 事前フィルタリング統計
+            valid_count = sum(1 for row_data in rows if should_fetch_project_data(row_data, target_date))
+            total_count = len(rows)
+            
+            st.write(f"📊 処理統計: 全{total_count}件中、{valid_count}件を並行取得、{total_count - valid_count}件を事前除外")
+            
+            # 高速並行処理
+            results = process_production_project_data_fast(rows, start_row, target_date, max_workers)
+            
+        else:
+            st.info("🐢 安全モードで処理中...")
+            results = []
+            progress = st.progress(0)
+            total = end_row - start_row + 1
 
-        for i, row_data in enumerate(rows, start=start_row):
-            result = process_production_project_data(row_data, i, target_date)
-            results.append(result)
-            progress.progress((i - start_row + 1) / total)
-
+            for i, row_data in enumerate(rows, start=start_row):
+                result = process_production_project_data(row_data, i, target_date)
+                results.append(result)
+                progress.progress((i - start_row + 1) / total)
+        
+        # 処理時間計測
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
         st.session_state["results"] = results
-        st.success("取得完了 ✅")
+        st.success(f"取得完了 ✅ (処理時間: {processing_time:.2f}秒)")
         
         # 全結果の表示
         df_all = pd.DataFrame(results, columns=["行", "プロジェクトID", "金額", "人数", "ステータス"])
